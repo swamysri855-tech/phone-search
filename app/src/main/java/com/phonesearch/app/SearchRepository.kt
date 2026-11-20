@@ -28,8 +28,9 @@ class SearchRepository(private val context: Context) {
 
     suspend fun search(f: SearchFilters): SearchOutcome = withContext(Dispatchers.IO) {
         coroutineScope {
-            val wantContacts = f.category == Category.ALL || f.category == Category.CONTACTS
-            val wantMessages = f.category == Category.ALL || f.category == Category.MESSAGES
+            // Inside a chosen folder there are only files.
+            val wantContacts = f.folder == null && (f.category == Category.ALL || f.category == Category.CONTACTS)
+            val wantMessages = f.folder == null && (f.category == Category.ALL || f.category == Category.MESSAGES)
             val wantFiles = f.category != Category.CONTACTS && f.category != Category.MESSAGES
 
             val contactsJob = async { if (wantContacts) safe { searchContacts(f) } else emptyList() }
@@ -198,21 +199,23 @@ class SearchRepository(private val context: Context) {
 
     private class DiskFile(val path: String, val relPath: String, val name: String, val size: Long, val modified: Long)
 
-    @Volatile
-    private var diskIndex: List<DiskFile>? = null
+    private val diskIndex = java.util.concurrent.ConcurrentHashMap<String, List<DiskFile>>()
 
-    /** Forget the cached folder scan (call on resume and after moving files). */
+    /** Forget the cached folder scans (call on resume and after moving files). */
     fun refreshFolderIndex() {
-        diskIndex = null
+        diskIndex.clear()
     }
 
-    private fun loadDiskIndex(): List<DiskFile> {
-        diskIndex?.let { return it }
+    /** Files under [folder] (or, when null, under the messaging apps' folders), read straight from disk. */
+    private fun loadDiskIndex(folder: String?): List<DiskFile> {
+        val cacheKey = folder ?: "<apps>"
+        diskIndex[cacheKey]?.let { return it }
         if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) return emptyList()
         val root = Environment.getExternalStorageDirectory()
         val rootPath = root.absolutePath
         val out = ArrayList<DiskFile>()
-        APP_FOLDERS.map { File(root, it) }.filter { it.isDirectory }.forEach { dir ->
+        val dirs = if (folder != null) listOf(File(folder)) else APP_FOLDERS.map { File(root, it) }
+        dirs.filter { it.isDirectory }.forEach { dir ->
             dir.walkTopDown().onEnter { d -> d == dir || isUsefulFolder(d.name) }.forEach { file ->
                 if (out.size < MAX_DISK_FILES && file.isFile && isUsefulFile(file.name)) {
                     val size = file.length()
@@ -223,7 +226,7 @@ class SearchRepository(private val context: Context) {
                 }
             }
         }
-        diskIndex = out
+        diskIndex[cacheKey] = out
         return out
     }
 
@@ -248,7 +251,7 @@ class SearchRepository(private val context: Context) {
             else -> null
         }
         val out = ArrayList<SearchResult>()
-        for (d in loadDiskIndex()) {
+        for (d in loadDiskIndex(f.folder)) {
             if (d.path in alreadyFound) continue
             if (!f.dateRange.isAny && !f.inRange(d.modified)) continue
             val mime = mimeFor(d.name)
@@ -292,6 +295,21 @@ class SearchRepository(private val context: Context) {
         val pathCol = if (Build.VERSION.SDK_INT >= 29) "relative_path" else "_data"
         termsClause(f.terms, listOf("_display_name", pathCol, "mime_type"), args)?.let { clauses += it }
 
+        val folderPrefix = f.folder?.trimEnd('/')?.plus("/")
+        if (folderPrefix != null) {
+            val rootPath = Environment.getExternalStorageDirectory().absolutePath + "/"
+            if (Build.VERSION.SDK_INT >= 29 && folderPrefix.startsWith(rootPath)) {
+                val rel = folderPrefix.removePrefix(rootPath)
+                if (rel.isNotEmpty()) {
+                    clauses += "relative_path LIKE ?"
+                    args += "$rel%"
+                }
+            } else {
+                clauses += "_data LIKE ?"
+                args += "$folderPrefix%"
+            }
+        }
+
         if (!f.dateRange.isAny) {
             clauses += "date_modified >= ? AND date_modified <= ?"
             args += (f.dateRange.from / 1000).toString()
@@ -318,6 +336,7 @@ class SearchRepository(private val context: Context) {
             while (c.moveToNext() && out.size < LIMIT_FILES) {
                 val id = c.getLong(0)
                 val path = c.getString(2)
+                if (folderPrefix != null && path != null && !path.startsWith(folderPrefix)) continue
                 val name = c.getString(1) ?: path?.substringAfterLast('/') ?: continue
                 val mime = c.getString(3)
                 val size = c.getLong(4)

@@ -45,6 +45,8 @@ data class SearchFilters(
     val category: Category,
     val dateRange: DateRange,
     val sort: SortMode,
+    /** Absolute path of the folder to search in (with its subfolders), or null for the whole phone. */
+    val folder: String? = null,
 ) {
     val terms: List<String> = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
 

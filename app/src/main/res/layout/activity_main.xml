@@ -81,6 +81,17 @@
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton
+        android:id="@+id/folderButton"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:ellipsize="middle"
+        android:maxLines="1"
+        android:text="📁 ఫోన్ మొత్తం వెతుకుతోంది • Folder ఎంచుకోండి" />
+
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/aiButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

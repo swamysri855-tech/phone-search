@@ -65,6 +65,8 @@ class MainActivity : AppCompatActivity() {
     private var category = Category.ALL
     private var dateRange = DateRange.ANY
     private var sortMode = SortMode.NEWEST
+    private var folder: File? = null
+    private lateinit var folderButton: MaterialButton
     private var searchJob: Job? = null
     private var askedOnce = false
 
@@ -128,6 +130,8 @@ class MainActivity : AppCompatActivity() {
         dateButton.setOnClickListener { showDateDialog() }
         sortButton.setOnClickListener { showSortDialog() }
         findViewById<View>(R.id.aiButton).setOnClickListener { aiButtonClicked() }
+        folderButton = findViewById(R.id.folderButton)
+        folderButton.setOnClickListener { chooseSearchFolder() }
         permButton.setOnClickListener { requestMissingAccess() }
 
         if (missingRuntimePermissions().isNotEmpty()) {
@@ -406,6 +410,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------------------------------------------------------------- Folder scope
+
+    private fun chooseSearchFolder() {
+        if (!canWriteFiles()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("అనుమతి కావాలి")
+                .setMessage("Folders చూడటానికి \"All files access\" ఆన్ చేయాలి.")
+                .setPositiveButton("ఆన్ చేయి") { _, _ -> requestMissingAccess() }
+                .setNegativeButton("రద్దు", null)
+                .show()
+            return
+        }
+        FolderPicker(
+            activity = this,
+            confirmLabel = "ఇందులో వెతుకు ✅",
+            extraButton = Pair<String, () -> Unit>("🌐 ఫోన్ మొత్తం") { setSearchFolder(null) },
+        ) { dir -> setSearchFolder(dir) }.show(folder ?: Environment.getExternalStorageDirectory())
+    }
+
+    private fun setSearchFolder(dir: File?) {
+        val isRoot = dir != null && dir.absolutePath == Environment.getExternalStorageDirectory().absolutePath
+        folder = if (isRoot) null else dir
+        folderButton.text = folder?.let { "📂 ${FolderPicker.displayPath(it)}  •  మార్చు" }
+            ?: "📁 ఫోన్ మొత్తం వెతుకుతోంది • Folder ఎంచుకోండి"
+        adapter.clearSelection()
+        runSearch(0)
+    }
+
     private fun showSortDialog() {
         val modes = SortMode.values()
         MaterialAlertDialogBuilder(this)
@@ -478,7 +510,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun runSearch(debounceMs: Long) {
         searchJob?.cancel()
-        val filters = SearchFilters(searchInput.text?.toString().orEmpty(), category, dateRange, sortMode)
+        val filters = SearchFilters(
+            searchInput.text?.toString().orEmpty(), category, dateRange, sortMode, folder?.absolutePath,
+        )
         searchJob = lifecycleScope.launch {
             if (debounceMs > 0) delay(debounceMs)
             progress.visibility = View.VISIBLE
@@ -490,7 +524,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildStatus(o: SearchOutcome, f: SearchFilters): String {
-        val head = if (f.terms.isEmpty()) "ఇటీవలివి" else "\"${f.query.trim()}\""
+        val where = folder?.let { "📂 ${it.name} లో " } ?: ""
+        val head = where + if (f.terms.isEmpty()) "ఇటీవలివి" else "\"${f.query.trim()}\""
         if (o.results.isEmpty()) return "$head — ఏమీ దొరకలేదు"
         val parts = ArrayList<String>()
         if (o.contacts > 0) parts += "${o.contacts} contacts"

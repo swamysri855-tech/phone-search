@@ -9,36 +9,51 @@ import android.widget.Toast
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
-/** A simple folder browser for the phone's internal storage. */
+/**
+ * A simple folder browser for the phone's internal storage, with shortcuts to common folders.
+ * [extraButton] adds an optional third button (e.g. "search the whole phone").
+ */
 class FolderPicker(
     private val activity: Activity,
     private val confirmLabel: String,
+    private val extraButton: Pair<String, () -> Unit>? = null,
     private val onPicked: (File) -> Unit,
 ) {
     private val root: File = Environment.getExternalStorageDirectory()
 
-    fun show(dir: File = root) {
-        val subs = (dir.listFiles { f -> f.isDirectory && !f.name.startsWith(".") } ?: emptyArray())
-            .sortedBy { it.name.lowercase() }
-        val atRoot = dir.canonicalPath == root.canonicalPath
-        val offset = if (atRoot) 0 else 1
-        val labels = ArrayList<String>()
-        if (!atRoot) labels += "⬆️  వెనక్కి"
-        labels += "➕  కొత్త folder తయారు చేయి"
-        subs.forEach { labels += "📁  ${it.name}" }
+    private val shortcuts: List<Pair<String, String>> = listOf(
+        "📷 Camera ఫోటోలు" to "DCIM/Camera",
+        "📱 Screenshots" to "Pictures/Screenshots",
+        "📱 Screenshots" to "DCIM/Screenshots",
+        "🟢 WhatsApp Images" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+        "🟢 WhatsApp Documents" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents",
+        "🟢 WhatsApp (మొత్తం)" to "Android/media/com.whatsapp/WhatsApp/Media",
+        "⬇️ Download" to "Download",
+        "🤖 AI_Sorted" to "Pictures/AI_Sorted",
+    )
 
-        MaterialAlertDialogBuilder(activity)
+    fun show(dir: File = root) {
+        val atRoot = dir.canonicalPath == root.canonicalPath
+        val entries = ArrayList<Pair<String, () -> Unit>>()
+        if (!atRoot) entries += "⬆️  వెనక్కి" to { show(dir.parentFile ?: root) }
+        if (atRoot) {
+            shortcuts.map { (label, rel) -> label to File(root, rel) }
+                .filter { it.second.isDirectory }
+                .distinctBy { it.first }
+                .forEach { (label, f) -> entries += "⭐  $label" to { show(f) } }
+        }
+        entries += "➕  కొత్త folder తయారు చేయి" to { askNewFolder(dir) }
+        (dir.listFiles { f -> f.isDirectory && !f.name.startsWith(".") } ?: emptyArray())
+            .sortedBy { it.name.lowercase() }
+            .forEach { sub -> entries += "📁  ${sub.name}" to { show(sub) } }
+
+        val builder = MaterialAlertDialogBuilder(activity)
             .setTitle("📂 " + displayPath(dir))
-            .setItems(labels.toTypedArray()) { _, which ->
-                when {
-                    !atRoot && which == 0 -> show(dir.parentFile ?: root)
-                    which == offset -> askNewFolder(dir)
-                    else -> show(subs[which - offset - 1])
-                }
-            }
+            .setItems(entries.map { it.first }.toTypedArray()) { _, which -> entries[which].second() }
             .setPositiveButton(confirmLabel) { _, _ -> onPicked(dir) }
             .setNegativeButton("రద్దు", null)
-            .show()
+        extraButton?.let { (label, action) -> builder.setNeutralButton(label) { _, _ -> action() } }
+        builder.show()
     }
 
     private fun askNewFolder(parent: File) {
@@ -68,8 +83,11 @@ class FolderPicker(
             .show()
     }
 
-    private fun displayPath(dir: File): String {
-        val rel = dir.absolutePath.removePrefix(root.absolutePath)
-        return "ఫోన్ storage" + rel.ifEmpty { "" }
+    companion object {
+        fun displayPath(dir: File): String {
+            val root = Environment.getExternalStorageDirectory().absolutePath
+            val rel = dir.absolutePath.removePrefix(root)
+            return if (rel.isEmpty()) "ఫోన్ storage" else rel
+        }
     }
 }
