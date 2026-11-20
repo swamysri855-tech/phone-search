@@ -34,7 +34,9 @@ import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.datepicker.MaterialDatePicker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -128,12 +130,17 @@ class MainActivity : AppCompatActivity() {
         dateButton.setOnClickListener { showDateDialog() }
         sortButton.setOnClickListener { showSortDialog() }
         findViewById<View>(R.id.aiButton).setOnClickListener { aiButtonClicked() }
+        findViewById<View>(R.id.binButton).setOnClickListener { startActivity(Intent(this, BinActivity::class.java)) }
+        findViewById<View>(R.id.callerIdButton).setOnClickListener { startActivity(Intent(this, CallerIdActivity::class.java)) }
         permButton.setOnClickListener { requestMissingAccess() }
 
         if (missingRuntimePermissions().isNotEmpty()) {
             askedOnce = true
             permissionLauncher.launch(runtimePermissions)
         }
+
+        // 30 రోజులు దాటిన బిన్ ఫైళ్లను శాశ్వతంగా తొలగిస్తుంది
+        lifecycleScope.launch(Dispatchers.IO) { Trash.purgeOld(applicationContext) }
     }
 
     override fun onResume() {
@@ -141,6 +148,10 @@ class MainActivity : AppCompatActivity() {
         repo.refreshFolderIndex()
         updatePermissionBanner()
         runSearch(0)
+        // కాలర్ ID కోసం కాంటాక్ట్స్‌ను లోకల్ జాబితాలోకి తాజాగా కాపీ చేస్తుంది
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            lifecycleScope.launch(Dispatchers.IO) { runCatching { Contacts.sync(applicationContext) } }
+        }
     }
 
     // ---------------------------------------------------------------- Selection
@@ -151,6 +162,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.selClose).setOnClickListener { adapter.clearSelection() }
         findViewById<View>(R.id.selAll).setOnClickListener { adapter.selectAll() }
         findViewById<View>(R.id.selAi).setOnClickListener { aiButtonClicked() }
+        findViewById<View>(R.id.selDelete).setOnClickListener { startDelete() }
         findViewById<View>(R.id.selMove).setOnClickListener { startTransfer(move = true) }
         findViewById<View>(R.id.selCopyTo).setOnClickListener { startTransfer(move = false) }
         findViewById<View>(R.id.selShare).setOnClickListener { shareSelected() }
@@ -166,6 +178,68 @@ class MainActivity : AppCompatActivity() {
         selectionBar.visibility = if (count > 0) View.VISIBLE else View.GONE
         selCount.text = "$count ఎంచుకున్నారు"
         backCallback.isEnabled = count > 0
+    }
+
+    // ---------------------------------------------------------------- Delete (recycle bin / permanent)
+
+    private fun startDelete() {
+        val files = adapter.selectedItems().filter { it.isFile && it.path != null }
+        if (files.isEmpty()) {
+            toast("Files మాత్రమే డిలీట్ చేయగలం. Contacts / Messages ని ఇక్కడ డిలీట్ చేయలేం.")
+            return
+        }
+        if (!canWriteFiles()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("అనుమతి కావాలి")
+                .setMessage("Files డిలీట్ చేయడానికి \"All files access\" ఆన్ చేయాలి.")
+                .setPositiveButton("ఆన్ చేయి") { _, _ -> requestMissingAccess() }
+                .setNegativeButton("రద్దు", null)
+                .show()
+            return
+        }
+        val apks = files.count { it.path!!.lowercase().endsWith(".apk") }
+        val warn = if (apks > 0) "\n\n⚠ వీటిలో $apks APK ఫైళ్లు ఉన్నాయి. వైరస్ అనుమానం ఉంటే 'శాశ్వత డిలీట్' ఎంచుకోండి — బిన్‌లో కూడా ఉండనివ్వదు." else ""
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🗑 ${files.size} file(s) డిలీట్ చేయాలా?")
+            .setMessage(
+                "• బిన్‌కి పంపు: ${Trash.DAYS} రోజులు బిన్‌లో ఉంటాయి, తిరిగి తెచ్చుకోవచ్చు.\n" +
+                    "• శాశ్వత డిలీట్: బిన్ లేకుండా పూర్తిగా పోతాయి, తిరిగి రావు.$warn"
+            )
+            .setPositiveButton("బిన్‌కి పంపు") { _, _ -> doDelete(files, permanent = false) }
+            .setNeutralButton("శాశ్వత డిలీట్") { _, _ -> confirmPermanentDelete(files) }
+            .setNegativeButton("వద్దు", null)
+            .show()
+    }
+
+    private fun confirmPermanentDelete(files: List<SearchResult>) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("⚠ శాశ్వతంగా డిలీట్ చేయాలా?")
+            .setMessage("${files.size} file(s) పూర్తిగా పోతాయి. బిన్‌లోకి వెళ్లవు, తిరిగి రావు.")
+            .setPositiveButton("అవును, శాశ్వతంగా డిలీట్") { _, _ -> doDelete(files, permanent = true) }
+            .setNegativeButton("వద్దు", null)
+            .show()
+    }
+
+    private fun doDelete(files: List<SearchResult>, permanent: Boolean) {
+        lifecycleScope.launch {
+            progress.visibility = View.VISIBLE
+            var ok = 0
+            var failed = 0
+            withContext(Dispatchers.IO) {
+                for (r in files) {
+                    val f = File(r.path ?: continue)
+                    val done = if (permanent) Trash.deleteForever(applicationContext, f) else Trash.moveToBin(applicationContext, f)
+                    if (done) ok++ else failed++
+                }
+            }
+            delay(700) // MediaStore కి మార్పు తెలియడానికి కొద్దిగా సమయం
+            progress.visibility = View.GONE
+            val where = if (permanent) "శాశ్వతంగా డిలీట్ చేశాను" else "బిన్‌కి పంపాను (${Trash.DAYS} రోజులు)"
+            toast("✅ $ok file(s) $where" + if (failed > 0) " • ❌ $failed కాలేదు" else "")
+            repo.refreshFolderIndex()
+            adapter.clearSelection()
+            runSearch(0)
+        }
     }
 
     private fun startTransfer(move: Boolean) {
