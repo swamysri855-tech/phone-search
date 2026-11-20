@@ -52,8 +52,8 @@ object FileOps {
             TransferResult(done, failed, skipped)
         }
 
-    /** Copy each plan's photo into outputRoot/<group>/<newName>, keeping the original untouched. */
-    suspend fun copyPlans(context: Context, plans: List<PhotoPlan>, outputRoot: File): TransferResult =
+    /** Move (or copy) each plan's photo to outputRoot/<group>/<newName>. */
+    suspend fun applyPlans(context: Context, plans: List<PhotoPlan>, outputRoot: File, move: Boolean): TransferResult =
         withContext(Dispatchers.IO) {
             var done = 0
             var failed = 0
@@ -62,7 +62,11 @@ object FileOps {
                 val dir = File(outputRoot, p.group.folder)
                 val target = if (dir.isDirectory || dir.mkdirs()) uniqueTarget(dir, p.newName) else null
                 val ok = target != null && try {
-                    copy(p.source, target)
+                    if (move) {
+                        p.source.renameTo(target) || (copy(p.source, target) && deleteOrRollback(p.source, target))
+                    } else {
+                        copy(p.source, target)
+                    }
                 } catch (e: Exception) {
                     target.delete()
                     false
@@ -70,6 +74,7 @@ object FileOps {
                 if (ok) {
                     done++
                     created += target!!.absolutePath
+                    if (move) created += p.source.absolutePath
                 } else {
                     failed++
                 }

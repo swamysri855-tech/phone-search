@@ -282,28 +282,37 @@ class MainActivity : AppCompatActivity() {
             .joinToString("\n") { (g, list) -> "${g.telugu}: ${list.size}" }
         val example = plans.first()
         val where = organizer.outputRoot.absolutePath.removePrefix(Environment.getExternalStorageDirectory().absolutePath)
+        val fromWhatsApp = plans.count { it.source.absolutePath.contains("whatsapp", ignoreCase = true) }
+        val waNote = if (fromWhatsApp > 0)
+            "\n\n⚠️ $fromWhatsApp ఫోటోలు WhatsApp వి. తరలిస్తే WhatsApp chat లో అవి కనబడవు (ఫోటో మాత్రం AI_Sorted లో ఉంటుంది)."
+        else ""
         MaterialAlertDialogBuilder(this)
             .setTitle("${plans.size} ఫోటోలు గుర్తించాను")
             .setMessage(
                 "$summary\n\n" +
                     "ఉదాహరణ: ${example.source.name}\n→ ${example.group.folder}/${example.newName}\n\n" +
-                    "కొత్త పేర్లతో కాపీలు \"$where\" లోని folders లో పెడతాను. అసలు ఫోటోలు అలాగే ఉంటాయి."
+                    "కొత్త పేర్లతో \"$where\" లోని folders లోకి పెడతాను.\n" +
+                    "• తరలించు: అదనపు memory పట్టదు\n• కాపీ: అసలు ఫోటో అక్కడే ఉంటుంది" + waNote
             )
-            .setPositiveButton("కాపీ చేయి ✅") { _, _ ->
-                lifecycleScope.launch {
-                    progress.visibility = View.VISIBLE
-                    val res = FileOps.copyPlans(applicationContext, plans, organizer.outputRoot)
-                    organizer.close()
-                    progress.visibility = View.GONE
-                    toast("✅ ${res.done} ఫోటోలు $where లో సేవ్ అయ్యాయి" + if (res.failed > 0) " • ❌ ${res.failed} కాలేదు" else "")
-                    repo.refreshFolderIndex()
-                    adapter.clearSelection()
-                    searchInput.setText("AI_Sorted")
-                }
-            }
+            .setPositiveButton("📂 తరలించు") { _, _ -> applyAiPlans(plans, organizer, where, move = true) }
+            .setNeutralButton("📑 కాపీ") { _, _ -> applyAiPlans(plans, organizer, where, move = false) }
             .setNegativeButton("వద్దు") { _, _ -> organizer.close() }
             .setCancelable(false)
             .show()
+    }
+
+    private fun applyAiPlans(plans: List<PhotoPlan>, organizer: PhotoOrganizer, where: String, move: Boolean) {
+        lifecycleScope.launch {
+            progress.visibility = View.VISIBLE
+            val res = FileOps.applyPlans(applicationContext, plans, organizer.outputRoot, move)
+            organizer.close()
+            progress.visibility = View.GONE
+            val verb = if (move) "తరలించాను" else "కాపీ చేశాను"
+            toast("✅ ${res.done} ఫోటోలు $where లోకి $verb" + if (res.failed > 0) " • ❌ ${res.failed} కాలేదు" else "")
+            repo.refreshFolderIndex()
+            adapter.clearSelection()
+            searchInput.setText("AI_Sorted")
+        }
     }
 
     private fun canWriteFiles(): Boolean =
