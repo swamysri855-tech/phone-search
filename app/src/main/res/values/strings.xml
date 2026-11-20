@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Phone Search</string>
+    <string name="search_hint">పేరు, నంబర్, మెసేజ్, ఫైల్ (ఉదా: jpg, pdf)…</string>
+    <string name="date_any">📅 ఎప్పుడైనా</string>
+    <string name="sort_newest">↕ కొత్తవి ముందు</string>
+    <string name="grant">అనుమతి ఇవ్వండి</string>
+</resources>
