@@ -6,4 +6,5 @@
     <color name="text_muted">#9AA0A6</color>
     <color name="banner">#3A2E1A</color>
     <color name="highlight">#80B8860B</color>
+    <color name="selected">#2D3B55</color>
 </resources>

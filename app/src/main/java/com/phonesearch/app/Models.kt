@@ -61,7 +61,11 @@ data class SearchResult(
     val mime: String? = null,
     val path: String? = null,
     val number: String? = null,
-)
+    val fullText: String? = null,
+) {
+    val key: String get() = "$kind|${uri ?: number}|$date|$title"
+    val isFile: Boolean get() = kind != Kind.CONTACT && kind != Kind.MESSAGE
+}
 
 data class SearchOutcome(
     val results: List<SearchResult>,

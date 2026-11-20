@@ -172,6 +172,7 @@ class SearchRepository(private val context: Context) {
                     date = date,
                     path = direction,
                     number = address,
+                    fullText = body,
                 )
             }
         }

@@ -31,8 +31,35 @@ class ResultAdapter(
     private val scope: CoroutineScope,
     private val resolver: ContentResolver,
     private val onClick: (SearchResult) -> Unit,
-    private val onLongClick: (SearchResult) -> Unit,
+    private val onSelectionChanged: (Int) -> Unit,
 ) : RecyclerView.Adapter<ResultAdapter.VH>() {
+
+    private val selected = LinkedHashSet<String>()
+    val inSelectionMode: Boolean get() = selected.isNotEmpty()
+
+    fun selectedItems(): List<SearchResult> = items.filter { it.key in selected }
+
+    @android.annotation.SuppressLint("NotifyDataSetChanged")
+    fun selectAll() {
+        items.forEach { selected += it.key }
+        notifyDataSetChanged()
+        onSelectionChanged(selectedItems().size)
+    }
+
+    @android.annotation.SuppressLint("NotifyDataSetChanged")
+    fun clearSelection() {
+        selected.clear()
+        notifyDataSetChanged()
+        onSelectionChanged(0)
+    }
+
+    private fun toggle(position: Int) {
+        if (position == RecyclerView.NO_POSITION) return
+        val key = items[position].key
+        if (!selected.remove(key)) selected += key
+        notifyItemChanged(position)
+        onSelectionChanged(selectedItems().size)
+    }
 
     private var items: List<SearchResult> = emptyList()
     private var terms: List<String> = emptyList()
@@ -45,7 +72,10 @@ class ResultAdapter(
     fun submit(list: List<SearchResult>, searchTerms: List<String>) {
         items = list
         terms = searchTerms
+        val visible = list.mapTo(HashSet()) { it.key }
+        selected.retainAll(visible)
         notifyDataSetChanged()
+        onSelectionChanged(selected.size)
     }
 
     class VH(v: View) : RecyclerView.ViewHolder(v) {
@@ -54,6 +84,7 @@ class ResultAdapter(
         val title: TextView = v.findViewById(R.id.title)
         val subtitle: TextView = v.findViewById(R.id.subtitle)
         val meta: TextView = v.findViewById(R.id.meta)
+        val defaultBackground: android.graphics.drawable.Drawable? = v.background
         var job: Job? = null
     }
 
@@ -80,8 +111,15 @@ class ResultAdapter(
         h.job?.cancel()
         h.thumb.setImageDrawable(null)
         h.thumb.visibility = View.GONE
+        val isSelected = r.key in selected
+        if (isSelected) {
+            h.itemView.setBackgroundColor(ContextCompat.getColor(ctx, R.color.selected))
+            h.icon.text = "✅"
+        } else {
+            h.itemView.background = h.defaultBackground
+        }
         val uri = r.uri
-        if ((r.kind == Kind.IMAGE || r.kind == Kind.VIDEO) && uri != null && Build.VERSION.SDK_INT >= 29) {
+        if (!isSelected && (r.kind == Kind.IMAGE || r.kind == Kind.VIDEO) && uri != null && Build.VERSION.SDK_INT >= 29) {
             val key = uri.toString()
             val cached = thumbs.get(key)
             if (cached != null) {
@@ -105,8 +143,13 @@ class ResultAdapter(
             }
         }
 
-        h.itemView.setOnClickListener { onClick(r) }
-        h.itemView.setOnLongClickListener { onLongClick(r); true }
+        h.itemView.setOnClickListener {
+            if (inSelectionMode) toggle(h.bindingAdapterPosition) else onClick(r)
+        }
+        h.itemView.setOnLongClickListener {
+            toggle(h.bindingAdapterPosition)
+            true
+        }
     }
 
     private fun highlight(text: String, ctx: android.content.Context): CharSequence {

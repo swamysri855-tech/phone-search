@@ -18,6 +18,7 @@ import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -54,6 +55,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var progress: ProgressBar
     private lateinit var adapter: ResultAdapter
+    private lateinit var selectionBar: View
+    private lateinit var selCount: TextView
+    private lateinit var backCallback: OnBackPressedCallback
 
     private val repo by lazy { SearchRepository(applicationContext) }
 
@@ -74,6 +78,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
+            if (Build.VERSION.SDK_INT <= 29) add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }.toTypedArray()
 
     private val permissionLauncher =
@@ -103,7 +108,8 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         progress = findViewById(R.id.progress)
 
-        adapter = ResultAdapter(lifecycleScope, contentResolver, ::openResult, ::copyResult)
+        adapter = ResultAdapter(lifecycleScope, contentResolver, ::openResult, ::onSelectionChanged)
+        setupSelectionBar()
         findViewById<RecyclerView>(R.id.results).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
@@ -133,6 +139,126 @@ class MainActivity : AppCompatActivity() {
         updatePermissionBanner()
         runSearch(0)
     }
+
+    // ---------------------------------------------------------------- Selection
+
+    private fun setupSelectionBar() {
+        selectionBar = findViewById(R.id.selectionBar)
+        selCount = findViewById(R.id.selCount)
+        findViewById<View>(R.id.selClose).setOnClickListener { adapter.clearSelection() }
+        findViewById<View>(R.id.selAll).setOnClickListener { adapter.selectAll() }
+        findViewById<View>(R.id.selMove).setOnClickListener { startTransfer(move = true) }
+        findViewById<View>(R.id.selCopyTo).setOnClickListener { startTransfer(move = false) }
+        findViewById<View>(R.id.selShare).setOnClickListener { shareSelected() }
+        findViewById<View>(R.id.selCopyText).setOnClickListener { copyText(adapter.selectedItems()) }
+
+        backCallback = object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() = adapter.clearSelection()
+        }
+        onBackPressedDispatcher.addCallback(this, backCallback)
+    }
+
+    private fun onSelectionChanged(count: Int) {
+        selectionBar.visibility = if (count > 0) View.VISIBLE else View.GONE
+        selCount.text = "$count ఎంచుకున్నారు"
+        backCallback.isEnabled = count > 0
+    }
+
+    private fun startTransfer(move: Boolean) {
+        val files = adapter.selectedItems().filter { it.isFile }
+        if (files.isEmpty()) {
+            toast("Files మాత్రమే తరలించగలం. Contacts / Messages కి 📤 పంపు లేదా 📋 కాపీ వాడండి.")
+            return
+        }
+        if (!canWriteFiles()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("అనుమతి కావాలి")
+                .setMessage("Files తరలించడానికి / కాపీ చేయడానికి \"All files access\" ఆన్ చేయాలి.")
+                .setPositiveButton("ఆన్ చేయి") { _, _ -> requestMissingAccess() }
+                .setNegativeButton("రద్దు", null)
+                .show()
+            return
+        }
+        val label = if (move) "ఇక్కడికి తరలించు ✅" else "ఇక్కడికి కాపీ ✅"
+        FolderPicker(this, label) { dest -> confirmTransfer(files, dest, move) }.show()
+    }
+
+    private fun confirmTransfer(files: List<SearchResult>, dest: File, move: Boolean) {
+        val action = if (move) "తరలించాలా" else "కాపీ చేయాలా"
+        val where = dest.absolutePath.removePrefix(Environment.getExternalStorageDirectory().absolutePath).ifEmpty { "/" }
+        MaterialAlertDialogBuilder(this)
+            .setMessage("${files.size} file(s) ని \"$where\" కి $action?")
+            .setPositiveButton("అవును") { _, _ -> doTransfer(files, dest, move) }
+            .setNegativeButton("వద్దు", null)
+            .show()
+    }
+
+    private fun doTransfer(files: List<SearchResult>, dest: File, move: Boolean) {
+        lifecycleScope.launch {
+            progress.visibility = View.VISIBLE
+            val res = FileOps.transfer(applicationContext, files, dest, move)
+            progress.visibility = View.GONE
+            val verb = if (move) "తరలించాను" else "కాపీ చేశాను"
+            val msg = buildString {
+                append("✅ ${res.done} file(s) $verb")
+                if (res.skipped > 0) append(" • ${res.skipped} వదిలేశాను (అక్కడే ఉన్నాయి / దొరకలేదు)")
+                if (res.failed > 0) append(" • ❌ ${res.failed} కాలేదు")
+            }
+            toast(msg)
+            adapter.clearSelection()
+            runSearch(0)
+        }
+    }
+
+    private fun canWriteFiles(): Boolean =
+        if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun shareSelected() {
+        val sel = adapter.selectedItems()
+        if (sel.isEmpty()) return
+        val uris = ArrayList(sel.filter { it.isFile }.mapNotNull { shareUriFor(it) })
+        val text = sel.filter { !it.isFile }.joinToString("\n\n") { textFor(it) }
+        val intent = when {
+            uris.size > 1 -> Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            uris.size == 1 -> Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+            else -> Intent(Intent.ACTION_SEND)
+        }
+        if (uris.isNotEmpty()) {
+            val mimes = sel.filter { it.isFile }.mapNotNull { it.mime }.distinct()
+            intent.type = when {
+                mimes.size == 1 -> mimes[0]
+                mimes.isNotEmpty() && mimes.all { it.startsWith("image/") } -> "image/*"
+                else -> "*/*"
+            }
+            val clip = ClipData.newRawUri("files", uris[0])
+            uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+            intent.clipData = clip
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } else {
+            intent.type = "text/plain"
+        }
+        if (text.isNotEmpty()) intent.putExtra(Intent.EXTRA_TEXT, text)
+        try {
+            startActivity(Intent.createChooser(intent, "ఎవరికి / ఎక్కడికి పంపాలి?"))
+        } catch (e: Exception) {
+            toast("పంపలేకపోయాను")
+        }
+    }
+
+    private fun shareUriFor(r: SearchResult): Uri? {
+        val file = r.path?.let { File(it) }
+        if (file != null && file.canRead()) {
+            try {
+                return FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            } catch (_: Exception) {
+            }
+        }
+        return r.uri
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     // ---------------------------------------------------------------- UI setup
 
@@ -331,15 +457,17 @@ class MainActivity : AppCompatActivity() {
         return r.uri
     }
 
-    private fun copyResult(r: SearchResult) {
-        val text = when (r.kind) {
-            Kind.CONTACT -> "${r.title} ${r.number}"
-            Kind.MESSAGE -> r.subtitle
-            else -> r.path ?: r.title
-        }
+    private fun textFor(r: SearchResult): String = when (r.kind) {
+        Kind.CONTACT -> "${r.title}: ${r.number}"
+        Kind.MESSAGE -> "${r.title}:\n${r.fullText ?: r.subtitle}"
+        else -> r.path ?: r.title
+    }
+
+    private fun copyText(items: List<SearchResult>) {
+        if (items.isEmpty()) return
         val cm = getSystemService(ClipboardManager::class.java)
-        cm.setPrimaryClip(ClipData.newPlainText("Phone Search", text))
-        Toast.makeText(this, "కాపీ అయ్యింది ✅", Toast.LENGTH_SHORT).show()
+        cm.setPrimaryClip(ClipData.newPlainText("Phone Search", items.joinToString("\n\n") { textFor(it) }))
+        Toast.makeText(this, "${items.size} కాపీ అయ్యాయి ✅", Toast.LENGTH_SHORT).show()
     }
 
     private fun hideKeyboard() {
