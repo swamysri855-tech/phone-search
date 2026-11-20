@@ -150,7 +150,7 @@ class MainActivity : AppCompatActivity() {
         selCount = findViewById(R.id.selCount)
         findViewById<View>(R.id.selClose).setOnClickListener { adapter.clearSelection() }
         findViewById<View>(R.id.selAll).setOnClickListener { adapter.selectAll() }
-        findViewById<View>(R.id.selAi).setOnClickListener { startAiOrganize() }
+        findViewById<View>(R.id.selAi).setOnClickListener { aiButtonClicked() }
         findViewById<View>(R.id.selMove).setOnClickListener { startTransfer(move = true) }
         findViewById<View>(R.id.selCopyTo).setOnClickListener { startTransfer(move = false) }
         findViewById<View>(R.id.selShare).setOnClickListener { shareSelected() }
@@ -219,31 +219,10 @@ class MainActivity : AppCompatActivity() {
 
     /** Big top button: sort the selected photos, or every photo currently shown. */
     private fun aiButtonClicked() {
-        if (adapter.inSelectionMode) {
-            startAiOrganize()
-            return
-        }
-        val photos = adapter.currentItems().filter { it.kind == Kind.IMAGE && it.path != null }
+        val source = if (adapter.inSelectionMode) adapter.selectedItems() else adapter.currentItems()
+        val photos = source.filter { it.kind == Kind.IMAGE && it.path != null }
         if (photos.isEmpty()) {
             toast("ఇక్కడ ఫోటోలు లేవు. 🖼️ Photos chip నొక్కి మళ్ళీ ప్రయత్నించండి.")
-            return
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle("🤖 AI తో ఫోటోలు వేరు చేయాలా?")
-            .setMessage(
-                "ఇప్పుడు కనిపిస్తున్న ${photos.size} ఫోటోలను AI చూసి, రకం ప్రకారం (మొక్కలు, ఆహారం, మనుషులు…) " +
-                    "folders లోకి వేరు చేస్తుంది.\n\n" +
-                    "కొన్ని ఫోటోలే కావాలంటే: పైన వెతికి / 📅 తేదీ ఎంచుకుని తగ్గించండి, లేదా ఫోటోపై long-press చేసి ఎంచుకుని మళ్ళీ ఈ బటన్ నొక్కండి."
-            )
-            .setPositiveButton("మొదలుపెట్టు ▶") { _, _ -> startAiOrganize(photos) }
-            .setNegativeButton("వద్దు", null)
-            .show()
-    }
-
-    private fun startAiOrganize(given: List<SearchResult>? = null) {
-        val photos = given ?: adapter.selectedItems().filter { it.kind == Kind.IMAGE && it.path != null }
-        if (photos.isEmpty()) {
-            toast("ఫోటోలు ఎంచుకోండి. (🖼️ Photos chip నొక్కి, ☑ అన్నీ ఎంచుకో చేయవచ్చు)")
             return
         }
         if (!canWriteFiles()) {
@@ -255,7 +234,23 @@ class MainActivity : AppCompatActivity() {
                 .show()
             return
         }
+        val which = if (adapter.inSelectionMode) "మీరు ఎంచుకున్న" else "ఇప్పుడు కనిపిస్తున్న"
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🤖 ${photos.size} ఫోటోలను AI తో వేరు చేయాలా?")
+            .setMessage(
+                "$which ${photos.size} ఫోటోలను AI చూస్తుంది.\n\n" +
+                    "🌿 మొక్కలు మాత్రమే: మొక్కలు, ఆకులు, పువ్వులు, పండ్లు, బెరడు, తీగలు, వేర్లు, విత్తనాలు ఉన్న ఫోటోలు మాత్రమే " +
+                    "Plants_Herbs folder లోకి. మిగతావి ఎక్కడివక్కడే ఉంటాయి.\n\n" +
+                    "🗂️ అన్ని రకాలు: ప్రతి ఫోటోనూ మొక్కలు, ఆహారం, మనుషులు… ఇలా 11 folders లోకి.\n\n" +
+                    "తరలించే ముందు AI ఎంచుకున్నవి చూపిస్తాను, తప్పుగా వచ్చినవి మీరు తీసేయవచ్చు."
+            )
+            .setPositiveButton("🌿 మొక్కలు మాత్రమే") { _, _ -> startAiOrganize(photos, plantsOnly = true) }
+            .setNeutralButton("🗂️ అన్ని రకాలు") { _, _ -> startAiOrganize(photos, plantsOnly = false) }
+            .setNegativeButton("వద్దు", null)
+            .show()
+    }
 
+    private fun startAiOrganize(photos: List<SearchResult>, plantsOnly: Boolean) {
         val organizer = PhotoOrganizer()
         val pad = (20 * resources.displayMetrics.density).toInt()
         val label = TextView(this).apply {
@@ -274,7 +269,7 @@ class MainActivity : AppCompatActivity() {
         }
         var job: Job? = null
         val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("🤖 ఫోటోలను గుర్తుపడుతోంది")
+            .setTitle(if (plantsOnly) "🌿 మొక్కల ఫోటోలు వెతుకుతోంది" else "🤖 ఫోటోలను గుర్తుపడుతోంది")
             .setView(box)
             .setCancelable(false)
             .setNegativeButton("ఆపు") { _, _ -> job?.cancel() }
@@ -282,12 +277,12 @@ class MainActivity : AppCompatActivity() {
 
         job = lifecycleScope.launch {
             try {
-                val plans = organizer.analyze(photos) { done, total ->
+                val plans = organizer.analyze(photos, plantsOnly) { done, total ->
                     label.text = "AI ఫోటోలను చూస్తోంది… $done / $total"
                     bar.setProgressCompat(done, true)
                 }
                 dialog.dismiss()
-                confirmAiPlans(plans, organizer)
+                reviewAiPlans(plans, organizer, plantsOnly, photos.size)
             } finally {
                 if (dialog.isShowing) dialog.dismiss()
                 if (!isActive) organizer.close()
@@ -295,32 +290,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun confirmAiPlans(plans: List<PhotoPlan>, organizer: PhotoOrganizer) {
+    private fun reviewAiPlans(plans: List<PhotoPlan>, organizer: PhotoOrganizer, plantsOnly: Boolean, total: Int) {
         if (plans.isEmpty()) {
-            toast("ఏ ఫోటోనూ చదవలేకపోయాను")
+            toast(if (plantsOnly) "$total ఫోటోలలో మొక్కల ఫోటోలు దొరకలేదు 🌿" else "ఏ ఫోటోనూ చదవలేకపోయాను")
             organizer.close()
             return
         }
-        val summary = plans.groupBy { it.group }.entries
-            .sortedByDescending { it.value.size }
-            .joinToString("\n") { (g, list) -> "${g.telugu}: ${list.size}" }
-        val example = plans.first()
         val where = organizer.outputRoot.absolutePath.removePrefix(Environment.getExternalStorageDirectory().absolutePath)
+        val title = if (plantsOnly) "🌿 మొక్కల ఫోటోలు" else "🗂️ AI వేరు చేసినవి"
+        ReviewDialog(
+            activity = this,
+            plans = plans,
+            title = title,
+            showGroup = !plantsOnly,
+            onDone = { kept, move -> confirmMove(kept, organizer, where, move) },
+            onCancel = { organizer.close() },
+        ).show()
+    }
+
+    private fun confirmMove(plans: List<PhotoPlan>, organizer: PhotoOrganizer, where: String, move: Boolean) {
         val fromWhatsApp = plans.count { it.source.absolutePath.contains("whatsapp", ignoreCase = true) }
-        val waNote = if (fromWhatsApp > 0)
-            "\n\n⚠️ $fromWhatsApp ఫోటోలు WhatsApp వి. తరలిస్తే WhatsApp chat లో అవి కనబడవు (ఫోటో మాత్రం AI_Sorted లో ఉంటుంది)."
-        else ""
+        if (!move || fromWhatsApp == 0) {
+            applyAiPlans(plans, organizer, where, move)
+            return
+        }
         MaterialAlertDialogBuilder(this)
-            .setTitle("${plans.size} ఫోటోలు గుర్తించాను")
-            .setMessage(
-                "$summary\n\n" +
-                    "ఉదాహరణ: ${example.source.name}\n→ ${example.group.folder}/${example.newName}\n\n" +
-                    "కొత్త పేర్లతో \"$where\" లోని folders లోకి పెడతాను.\n" +
-                    "• తరలించు: అదనపు memory పట్టదు\n• కాపీ: అసలు ఫోటో అక్కడే ఉంటుంది" + waNote
-            )
-            .setPositiveButton("📂 తరలించు") { _, _ -> applyAiPlans(plans, organizer, where, move = true) }
-            .setNeutralButton("📑 కాపీ") { _, _ -> applyAiPlans(plans, organizer, where, move = false) }
-            .setNegativeButton("వద్దు") { _, _ -> organizer.close() }
+            .setTitle("⚠️ WhatsApp ఫోటోలు")
+            .setMessage("$fromWhatsApp ఫోటోలు WhatsApp వి. తరలిస్తే WhatsApp chat లో అవి కనబడవు (ఫోటో మాత్రం $where లో ఉంటుంది).")
+            .setPositiveButton("సరే, తరలించు") { _, _ -> applyAiPlans(plans, organizer, where, move = true) }
+            .setNeutralButton("కాపీ చేయి") { _, _ -> applyAiPlans(plans, organizer, where, move = false) }
+            .setNegativeButton("రద్దు") { _, _ -> organizer.close() }
             .setCancelable(false)
             .show()
     }

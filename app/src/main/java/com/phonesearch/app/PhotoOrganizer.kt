@@ -20,13 +20,18 @@ import kotlin.coroutines.coroutineContext
 data class PhotoPlan(val source: File, val group: PhotoGroup, val labels: List<String>, val newName: String)
 
 enum class PhotoGroup(val folder: String, val telugu: String, val keywords: List<String>) {
-    PLANTS("Plants_Herbs", "🌿 మొక్కలు / మూలికలు / పువ్వులు", listOf(
-        "plant", "flower", "leaf", "tree", "petal", "garden", "herb", "moss", "grass", "bonsai",
-        "flowerpot", "houseplant", "branch", "bamboo", "cactus", "lily", "rose", "sunflower")),
+    PLANTS("Plants_Herbs", "🌿 మొక్కలు / మూలికలు", listOf(
+        "plant", "flower", "leaf", "leaves", "tree", "petal", "garden", "herb", "moss", "grass", "bonsai",
+        "flowerpot", "houseplant", "branch", "bamboo", "cactus", "lily", "rose", "sunflower", "fruit",
+        "vegetable", "bark", "vine", "creeper", "root", "seed", "nut", "berry", "berries", "banana", "apple",
+        "mango", "coconut", "palm", "fern", "ivy", "shrub", "bush", "twig", "stem", "blossom", "bud",
+        "orchid", "lotus", "tulip", "daisy", "jasmine", "hibiscus", "marigold", "citrus", "lemon", "tomato",
+        "chili", "pepper", "ginger", "garlic", "onion", "mushroom", "grape", "pumpkin", "cucumber", "wheat",
+        "corn", "forest", "jungle", "sapling", "seedling", "foliage", "botanical", "succulent", "aloe")),
     FOOD("Food", "🍲 ఆహారం", listOf(
-        "food", "fruit", "vegetable", "cake", "bread", "pizza", "dessert", "cuisine", "dish", "meal",
-        "cookie", "juice", "drink", "coffee", "tea", "rice", "noodle", "soup", "salad", "candy",
-        "chocolate", "icing", "pasta", "sushi", "hot dog", "burger", "egg", "cheese", "bakery")),
+        "food", "cake", "bread", "pizza", "dessert", "cuisine", "dish", "meal", "cookie", "juice", "drink",
+        "coffee", "tea", "rice", "noodle", "soup", "salad", "candy", "chocolate", "icing", "pasta", "sushi",
+        "burger", "egg", "cheese", "bakery", "baked goods", "snack")),
     PEOPLE("People", "🧑 మనుషులు", listOf(
         "selfie", "smile", "beard", "hand", "skin", "hair", "eyelash", "child", "baby", "crowd",
         "person", "jeans", "dress", "sari", "turban", "glasses", "moustache", "team", "dude", "bride")),
@@ -38,10 +43,10 @@ enum class PhotoGroup(val folder: String, val telugu: String, val keywords: List
         "document", "whiteboard", "calendar", "map", "sign")),
     VEHICLES("Vehicles", "🚗 వాహనాలు", listOf(
         "car", "bicycle", "motorcycle", "bus", "truck", "vehicle", "boat", "train", "airplane",
-        "wheel", "tire", "scooter", "auto", "jet")),
+        "wheel", "tire", "scooter", "jet")),
     NATURE("Nature", "🏞️ ప్రకృతి", listOf(
         "sky", "mountain", "beach", "sea", "lake", "river", "cloud", "sunset", "waterfall", "desert",
-        "forest", "rainbow", "star", "field", "rock", "snow", "canyon", "lightning", "pond")),
+        "rainbow", "star", "field", "rock", "snow", "canyon", "lightning", "pond")),
     PLACES("Buildings_Places", "🛕 భవనాలు / ప్రదేశాలు", listOf(
         "building", "temple", "church", "mosque", "house", "bridge", "tower", "skyscraper", "monument",
         "room", "shelf", "kitchen", "stadium", "castle", "fountain", "road", "pier")),
@@ -50,12 +55,18 @@ enum class PhotoGroup(val folder: String, val telugu: String, val keywords: List
     SCREENSHOTS("Screenshots", "📱 Screenshots", emptyList()),
     OTHERS("Others", "📦 ఇతరాలు", emptyList());
 
+    /** Whole-word match, so "car" doesn't match "card" and "tea" doesn't match "team". */
+    fun matches(label: String): Boolean {
+        val l = label.lowercase().trim()
+        if (l in keywords) return true
+        return l.split(' ', '-', '_').any { w -> w in keywords || w.removeSuffix("s") in keywords }
+    }
+
     companion object {
         fun forLabels(labels: List<String>): PhotoGroup {
             // Labels come best-first; the first one that matches a group decides.
             for (label in labels) {
-                val l = label.lowercase()
-                values().firstOrNull { g -> g.keywords.any { l.contains(it) } }?.let { return it }
+                values().firstOrNull { it.matches(label) }?.let { return it }
             }
             return OTHERS
         }
@@ -66,7 +77,7 @@ enum class PhotoGroup(val folder: String, val telugu: String, val keywords: List
 class PhotoOrganizer {
 
     private val labeler = ImageLabeling.getClient(
-        ImageLabelerOptions.Builder().setConfidenceThreshold(0.55f).build()
+        ImageLabelerOptions.Builder().setConfidenceThreshold(0.4f).build()
     )
     private val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
@@ -74,13 +85,21 @@ class PhotoOrganizer {
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "AI_Sorted"
     )
 
-    suspend fun analyze(items: List<SearchResult>, onProgress: (done: Int, total: Int) -> Unit): List<PhotoPlan> =
+    /**
+     * plantsOnly = true: only photos the AI is confident show a plant are returned (others are left alone).
+     * plantsOnly = false: every photo gets one of the groups.
+     */
+    suspend fun analyze(
+        items: List<SearchResult>,
+        plantsOnly: Boolean,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): List<PhotoPlan> =
         withContext(Dispatchers.Default) {
             val out = ArrayList<PhotoPlan>()
             items.forEachIndexed { i, r ->
                 coroutineContext.ensureActive()
                 try {
-                    analyzeOne(r)?.let { out += it }
+                    analyzeOne(r, plantsOnly)?.let { out += it }
                 } catch (_: Exception) {
                 }
                 withContext(Dispatchers.Main) { onProgress(i + 1, items.size) }
@@ -88,25 +107,39 @@ class PhotoOrganizer {
             out
         }
 
-    private fun analyzeOne(r: SearchResult): PhotoPlan? {
+    private fun analyzeOne(r: SearchResult, plantsOnly: Boolean): PhotoPlan? {
         val file = File(r.path ?: return null)
         if (!file.canRead() || file.absolutePath.startsWith(outputRoot.absolutePath)) return null
         val bitmap = decodeSmall(file) ?: return null
-        val labels = try {
+        val found = try {
             Tasks.await(labeler.process(InputImage.fromBitmap(bitmap, 0)))
                 .sortedByDescending { it.confidence }
-                .map { it.text }
+                .map { it.text to it.confidence }
         } finally {
             bitmap.recycle()
         }
-        val group = if (file.absolutePath.contains("screenshot", ignoreCase = true)) {
-            PhotoGroup.SCREENSHOTS
+        val top = found.take(5)
+        val plantLabels = top.filter { PhotoGroup.PLANTS.matches(it.first) }
+        val group: PhotoGroup
+        val words: List<String>
+        if (plantsOnly) {
+            // Look at the AI's top 5 answers; a plant answer must be confident enough.
+            val score = plantLabels.maxOfOrNull { it.second } ?: 0f
+            if (score < PLANT_MIN_CONFIDENCE) return null
+            group = PhotoGroup.PLANTS
+            words = (plantLabels + top).map { it.first }.distinct()
         } else {
-            PhotoGroup.forLabels(labels)
+            group = when {
+                file.absolutePath.contains("screenshot", ignoreCase = true) -> PhotoGroup.SCREENSHOTS
+                (plantLabels.maxOfOrNull { it.second } ?: 0f) >= PLANT_MIN_CONFIDENCE -> PhotoGroup.PLANTS
+                else -> PhotoGroup.forLabels(top.filter { it.second >= 0.55f }.map { it.first })
+            }
+            words = top.map { it.first }
         }
-        val words = labels.take(2).map { clean(it) }.filter { it.isNotEmpty() }.ifEmpty { listOf("Photo") }
+        val labels = words
+        val nameWords = words.take(2).map { clean(it) }.filter { it.isNotEmpty() }.ifEmpty { listOf("Photo") }
         val ext = file.name.substringAfterLast('.', "jpg")
-        val name = words.joinToString("_") + "_" + dateFormat.format(Date(file.lastModified())) + "." + ext
+        val name = nameWords.joinToString("_") + "_" + dateFormat.format(Date(file.lastModified())) + "." + ext
         return PhotoPlan(file, group, labels, name)
     }
 
@@ -124,4 +157,8 @@ class PhotoOrganizer {
         label.trim().replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').replaceFirstChar { it.uppercase() }
 
     fun close() = labeler.close()
+
+    companion object {
+        const val PLANT_MIN_CONFIDENCE = 0.6f
+    }
 }
