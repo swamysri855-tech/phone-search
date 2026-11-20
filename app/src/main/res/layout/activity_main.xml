@@ -122,6 +122,44 @@
         android:text="🤖 ఫోటోలను AI తో వేరు చేయి"
         android:textSize="15sp" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/cleanerButton"
+        style="@style/Widget.Material3.Button.TonalButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:text="🧹 WhatsApp పాత files తీసేయి" />
+
+    <LinearLayout
+        android:id="@+id/cleanerBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="16dp"
+        android:background="@color/banner"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="10dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/cleanerText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="@color/text"
+            android:textSize="13sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/cleanerExit"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="✕ ముగించు" />
+    </LinearLayout>
+
     <LinearLayout
         android:id="@+id/permBanner"
         android:layout_width="match_parent"

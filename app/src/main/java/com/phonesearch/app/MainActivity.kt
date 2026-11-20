@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity() {
     private var dateRange = DateRange.ANY
     private var sortMode = SortMode.NEWEST
     private var folder: File? = null
+    private var cleanerResults: List<SearchResult>? = null
     private lateinit var folderButton: MaterialButton
     private var searchJob: Job? = null
     private var askedOnce = false
@@ -134,6 +135,11 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.aiButton).setOnClickListener { aiButtonClicked() }
         folderButton = findViewById(R.id.folderButton)
         folderButton.setOnClickListener { chooseSearchFolder() }
+        findViewById<View>(R.id.cleanerButton).setOnClickListener { startCleaner() }
+        findViewById<View>(R.id.cleanerExit).setOnClickListener {
+            exitCleanerMode()
+            runSearch(0)
+        }
         findViewById<View>(R.id.binButton).setOnClickListener { startActivity(Intent(this, BinActivity::class.java)) }
         findViewById<View>(R.id.callerIdButton).setOnClickListener { startActivity(Intent(this, CallerIdActivity::class.java)) }
         permButton.setOnClickListener { requestMissingAccess() }
@@ -180,7 +186,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun onSelectionChanged(count: Int) {
         selectionBar.visibility = if (count > 0) View.VISIBLE else View.GONE
-        selCount.text = "$count ఎంచుకున్నారు"
+        val bytes = if (count > 0) adapter.selectedItems().sumOf { it.size } else 0L
+        selCount.text = "$count ఎంచుకున్నారు" +
+            if (bytes > 0) " • ${android.text.format.Formatter.formatShortFileSize(this, bytes)}" else ""
         backCallback.isEnabled = count > 0
     }
 
@@ -484,6 +492,106 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------------------------------------------------------------- WhatsApp cleaner
+
+    private fun startCleaner() {
+        if (!canWriteFiles()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("అనుమతి కావాలి")
+                .setMessage("WhatsApp files చూడటానికి, తీసేయడానికి \"All files access\" ఆన్ చేయాలి.")
+                .setPositiveButton("ఆన్ చేయి") { _, _ -> requestMissingAccess() }
+                .setNegativeButton("రద్దు", null)
+                .show()
+            return
+        }
+        val types = WaType.values()
+        val labels = types.map { it.label } + "↗️ నేను పంపినవి (Sent) కూడా"
+        val checked = (types.map { it.onByDefault } + false).toBooleanArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🧹 Step 1: ఏ files తీసేయాలి?")
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton("తర్వాత ▶") { _, _ ->
+                val chosen = types.filterIndexed { i, _ -> checked[i] }.toSet()
+                if (chosen.isEmpty()) toast("కనీసం ఒక రకం ఎంచుకోండి") else askCleanerAge(chosen, checked.last())
+            }
+            .setNegativeButton("రద్దు", null)
+            .show()
+    }
+
+    private fun askCleanerAge(types: Set<WaType>, includeSent: Boolean) {
+        val options = arrayOf(
+            "1 నెల కంటే పాతవి", "3 నెలల కంటే పాతవి", "6 నెలల కంటే పాతవి",
+            "1 సంవత్సరం కంటే పాతవి", "2 సంవత్సరాల కంటే పాతవి",
+            "📅 ఈ తేదీకి ముందువి…", "అన్నీ (తేదీ ఏదైనా)",
+        )
+        val months = intArrayOf(1, 3, 6, 12, 24)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🧹 Step 2: ఎంత పాతవి?")
+            .setItems(options) { _, which ->
+                when (which) {
+                    in months.indices -> olderThan(months[which]).let { runCleanerScan(types, includeSent, it.to + 1, it.label) }
+                    5 -> pickSingleDate("ఈ తేదీకి ముందువి") { day ->
+                        runCleanerScan(types, includeSent, day, "${shortDate(day)} కి ముందువి")
+                    }
+                    else -> runCleanerScan(types, includeSent, Long.MAX_VALUE, "అన్నీ")
+                }
+            }
+            .setNegativeButton("రద్దు", null)
+            .show()
+    }
+
+    private fun runCleanerScan(types: Set<WaType>, includeSent: Boolean, before: Long, ageLabel: String) {
+        lifecycleScope.launch {
+            progress.visibility = View.VISIBLE
+            statusText.text = "🧹 WhatsApp files వెతుకుతోంది…"
+            val found = withContext(Dispatchers.IO) { WhatsAppCleaner.scan(types, includeSent, before) }
+            progress.visibility = View.GONE
+            if (found.isEmpty()) {
+                toast("$ageLabel WhatsApp files ఏవీ లేవు ✅")
+                runSearch(0)
+                return@launch
+            }
+            val fmt = { b: Long -> android.text.format.Formatter.formatShortFileSize(this@MainActivity, b) }
+            val summary = found.groupBy { WhatsAppCleaner.typeOf(it) }.entries
+                .sortedByDescending { e -> e.value.sumOf { it.size } }
+                .joinToString("\n") { (t, list) -> "$t: ${list.size} — ${fmt(list.sumOf { it.size })}" }
+            val total = found.sumOf { it.size }
+            val who = if (includeSent) "వచ్చినవి + పంపినవి" else "మీకు వచ్చినవి మాత్రమే (పంపినవి కాదు)"
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle("🧹 ${found.size} files — ${fmt(total)}")
+                .setMessage(
+                    "$ageLabel • $who\n\n$summary\n\n" +
+                        "తర్వాతి screen లో అన్నీ ఎంచుకుని చూపిస్తాను (పెద్దవి ముందు). " +
+                        "ఉంచుకోవాలనుకున్నవాటిపై tap చేస్తే అవి డిలీట్ కావు. ఆ తర్వాత క్రింద 🗑 డిలీట్ నొక్కండి."
+                )
+                .setPositiveButton("చూసి ఎంచుకో ▶") { _, _ -> enterCleanerMode(found) }
+                .setNegativeButton("వద్దు") { _, _ -> runSearch(0) }
+                .show()
+        }
+    }
+
+    private fun enterCleanerMode(items: List<SearchResult>) {
+        cleanerResults = items
+        findViewById<View>(R.id.cleanerBar).visibility = View.VISIBLE
+        showCleanerList(items)
+        adapter.selectAll()
+    }
+
+    private fun showCleanerList(items: List<SearchResult>) {
+        adapter.submit(items, emptyList())
+        val size = android.text.format.Formatter.formatShortFileSize(this, items.sumOf { it.size })
+        findViewById<TextView>(R.id.cleanerText).text =
+            "🧹 WhatsApp Cleaner: ${items.size} files • $size\n" +
+                "ఉంచుకోవాలనుకున్నవాటిపై tap చేయండి. ఆ తర్వాత 🗑 డిలీట్ → జాగా వెంటనే ఖాళీ కావాలంటే \"శాశ్వత డిలీట్\"."
+        statusText.text = "🧹 పెద్దవి ముందు • ఎంచుకున్నవి మాత్రమే డిలీట్ అవుతాయి"
+    }
+
+    private fun exitCleanerMode() {
+        cleanerResults = null
+        findViewById<View>(R.id.cleanerBar).visibility = View.GONE
+        adapter.clearSelection()
+    }
+
     // ---------------------------------------------------------------- Folder scope
 
     private fun chooseSearchFolder() {
@@ -528,7 +636,10 @@ class MainActivity : AppCompatActivity() {
     private fun showDateDialog() {
         val options = arrayOf(
             "ఎప్పుడైనా", "ఈ రోజు", "నిన్న", "గత 7 రోజులు", "గత 30 రోజులు",
-            "ఈ సంవత్సరం", "గత సంవత్సరం", "తేదీలు ఎంచుకోండి (Custom)…",
+            "ఈ సంవత్సరం", "గత సంవత్సరం",
+            "⏳ 1 నెల కంటే పాతవి", "⏳ 3 నెలల కంటే పాతవి", "⏳ 6 నెలల కంటే పాతవి",
+            "⏳ 1 సంవత్సరం కంటే పాతవి", "⏳ 2 సంవత్సరాల కంటే పాతవి",
+            "📅 ఈ తేదీకి ముందువి…", "📅 ఈ తేదీ తర్వాతవి…", "📅 ఈ తేదీల మధ్య…",
         )
         MaterialAlertDialogBuilder(this)
             .setTitle("తేదీ ప్రకారం వెతకండి")
@@ -542,11 +653,49 @@ class MainActivity : AppCompatActivity() {
                     4 -> setDateRange(DateRange("గత 30 రోజులు", startOfDay(-29), now))
                     5 -> setDateRange(DateRange("ఈ సంవత్సరం", startOfYear(0), now))
                     6 -> setDateRange(DateRange("గత సంవత్సరం", startOfYear(-1), startOfYear(0) - 1))
-                    7 -> showCustomRangePicker()
+                    7 -> setDateRange(olderThan(1))
+                    8 -> setDateRange(olderThan(3))
+                    9 -> setDateRange(olderThan(6))
+                    10 -> setDateRange(olderThan(12))
+                    11 -> setDateRange(olderThan(24))
+                    12 -> pickSingleDate("ఈ తేదీకి ముందువి") { day ->
+                        setDateRange(DateRange("${shortDate(day)} కి ముందువి", 0L, day - 1))
+                    }
+                    13 -> pickSingleDate("ఈ తేదీ తర్వాతవి") { day ->
+                        setDateRange(DateRange("${shortDate(day)} తర్వాతవి", day, Long.MAX_VALUE - 1))
+                    }
+                    14 -> showCustomRangePicker()
                 }
             }
             .show()
     }
+
+    /** Everything last changed more than [months] months ago. */
+    private fun olderThan(months: Int): DateRange {
+        val cutoff = Calendar.getInstance().apply {
+            add(Calendar.MONTH, -months)
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val label = if (months % 12 == 0) "${months / 12} సం. కంటే పాతవి" else "$months నెలల కంటే పాతవి"
+        return DateRange(label, 0L, cutoff - 1)
+    }
+
+    /** Date picker for one day; gives back the start of that day in local time. */
+    private fun pickSingleDate(title: String, onPicked: (Long) -> Unit) {
+        val picker = MaterialDatePicker.Builder.datePicker().setTitleText(title).build()
+        picker.addOnPositiveButtonClickListener { utcMidnight ->
+            val utc = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = utcMidnight }
+            val local = Calendar.getInstance().apply {
+                clear()
+                set(utc.get(Calendar.YEAR), utc.get(Calendar.MONTH), utc.get(Calendar.DAY_OF_MONTH))
+            }
+            onPicked(local.timeInMillis)
+        }
+        picker.show(supportFragmentManager, "date")
+    }
+
+    private fun shortDate(ms: Long) = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(ms))
 
     private fun showCustomRangePicker() {
         val picker = MaterialDatePicker.Builder.dateRangePicker()
@@ -584,6 +733,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun runSearch(debounceMs: Long) {
         searchJob?.cancel()
+        cleanerResults?.let { list ->
+            // Cleaner mode: keep showing the cleaner's list (minus files already deleted/moved).
+            val alive = list.filter { r -> r.path?.let { File(it).exists() } == true }
+            if (alive.isNotEmpty()) {
+                cleanerResults = alive
+                showCleanerList(alive)
+                return
+            }
+            exitCleanerMode()
+        }
         val filters = SearchFilters(
             searchInput.text?.toString().orEmpty(), category, dateRange, sortMode, folder?.absolutePath,
         )
