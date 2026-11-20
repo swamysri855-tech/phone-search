@@ -136,6 +136,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        repo.refreshFolderIndex()
         updatePermissionBanner()
         runSearch(0)
     }
@@ -205,6 +206,7 @@ class MainActivity : AppCompatActivity() {
                 if (res.failed > 0) append(" • ❌ ${res.failed} కాలేదు")
             }
             toast(msg)
+            repo.refreshFolderIndex()
             adapter.clearSelection()
             runSearch(0)
         }
@@ -445,7 +447,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun fileUriFor(r: SearchResult): Uri? {
         val isMedia = r.kind == Kind.IMAGE || r.kind == Kind.VIDEO || r.kind == Kind.AUDIO
-        if (!isMedia) {
+        if (!isMedia || r.uri == null) {
             val file = r.path?.let { File(it) }
             if (file != null && file.canRead()) {
                 try {

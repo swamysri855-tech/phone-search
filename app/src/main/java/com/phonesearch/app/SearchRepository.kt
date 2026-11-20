@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.webkit.MimeTypeMap
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Telephony
@@ -14,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /** Searches contacts, SMS and every file indexed on the phone. */
 class SearchRepository(private val context: Context) {
@@ -37,14 +40,7 @@ class SearchRepository(private val context: Context) {
             val messages = messagesJob.await()
             val files = filesJob.await()
 
-            val all = (contacts + messages + files).let { list ->
-                when (f.sort) {
-                    SortMode.NEWEST -> list.sortedByDescending { it.date }
-                    SortMode.OLDEST -> list.sortedBy { it.date }
-                    SortMode.NAME -> list.sortedBy { it.title.lowercase() }
-                    SortMode.SIZE -> list.sortedByDescending { it.size }
-                }
-            }
+            val all = sortResults(contacts + messages + files, f.sort)
             SearchOutcome(all, contacts.size, messages.size, files.size)
         }
     }
@@ -182,6 +178,102 @@ class SearchRepository(private val context: Context) {
     // ---------------------------------------------------------------- Files
 
     private fun searchFiles(f: SearchFilters): List<SearchResult> {
+        val indexed = safe { searchMediaStore(f) }
+        val extra = safe { searchHiddenAppFolders(f, indexed.mapNotNullTo(HashSet()) { it.path }) }
+        if (extra.isEmpty()) return indexed
+        return sortResults(indexed + extra, f.sort).take(LIMIT_FILES)
+    }
+
+    private fun sortResults(list: List<SearchResult>, sort: SortMode) = when (sort) {
+        SortMode.NEWEST -> list.sortedByDescending { it.date }
+        SortMode.OLDEST -> list.sortedBy { it.date }
+        SortMode.NAME -> list.sortedBy { it.title.lowercase() }
+        SortMode.SIZE -> list.sortedByDescending { it.size }
+    }
+
+    // ------------------------------------------- WhatsApp / Telegram folders
+    // Messaging apps hide many files from Android's media index (".nomedia": sent items,
+    // voice notes, statuses, or everything when "Media visibility" is off), so we walk
+    // those folders directly and keep the list in memory until the next refresh.
+
+    private class DiskFile(val path: String, val relPath: String, val name: String, val size: Long, val modified: Long)
+
+    @Volatile
+    private var diskIndex: List<DiskFile>? = null
+
+    /** Forget the cached folder scan (call on resume and after moving files). */
+    fun refreshFolderIndex() {
+        diskIndex = null
+    }
+
+    private fun loadDiskIndex(): List<DiskFile> {
+        diskIndex?.let { return it }
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) return emptyList()
+        val root = Environment.getExternalStorageDirectory()
+        val rootPath = root.absolutePath
+        val out = ArrayList<DiskFile>()
+        APP_FOLDERS.map { File(root, it) }.filter { it.isDirectory }.forEach { dir ->
+            dir.walkTopDown().forEach { file ->
+                if (out.size < MAX_DISK_FILES && file.isFile && file.name != ".nomedia") {
+                    val size = file.length()
+                    if (size > 0) {
+                        val rel = file.parent.orEmpty().removePrefix(rootPath)
+                        out += DiskFile(file.absolutePath, rel, file.name, size, file.lastModified())
+                    }
+                }
+            }
+        }
+        diskIndex = out
+        return out
+    }
+
+    private fun searchHiddenAppFolders(f: SearchFilters, alreadyFound: Set<String>): List<SearchResult> {
+        val wantKinds: Set<Kind>? = when (f.category) {
+            Category.IMAGES -> setOf(Kind.IMAGE)
+            Category.VIDEOS -> setOf(Kind.VIDEO)
+            Category.AUDIO -> setOf(Kind.AUDIO)
+            Category.DOCUMENTS -> setOf(Kind.DOCUMENT)
+            Category.APKS -> setOf(Kind.APK)
+            else -> null
+        }
+        val out = ArrayList<SearchResult>()
+        for (d in loadDiskIndex()) {
+            if (d.path in alreadyFound) continue
+            if (!f.dateRange.isAny && !f.inRange(d.modified)) continue
+            val mime = mimeFor(d.name)
+            if (f.terms.any { t ->
+                    !d.name.contains(t, true) && !d.relPath.contains(t, true) && mime?.contains(t, true) != true
+                }
+            ) continue
+            val kind = kindFor(0, mime, d.name)
+            if (wantKinds != null && kind !in wantKinds) continue
+            out += SearchResult(
+                kind = kind,
+                title = d.name,
+                subtitle = d.relPath.ifEmpty { "/" },
+                date = d.modified,
+                size = d.size,
+                uri = null,
+                mime = mime,
+                path = d.path,
+            )
+        }
+        return out
+    }
+
+    private fun mimeFor(name: String): String? {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        if (ext.isEmpty()) return null
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: when (ext) {
+            "opus" -> "audio/ogg"
+            "webp" -> "image/webp"
+            else -> null
+        }
+    }
+
+    // ------------------------------------------- Android media index
+
+    private fun searchMediaStore(f: SearchFilters): List<SearchResult> {
         val filesUri = MediaStore.Files.getContentUri("external")
         val args = ArrayList<String>()
         val clauses = arrayListOf("_size > 0")
@@ -260,6 +352,16 @@ class SearchRepository(private val context: Context) {
         const val LIMIT_CONTACTS = 300
         const val LIMIT_MESSAGES = 400
         const val LIMIT_FILES = 1500
+        private const val MAX_DISK_FILES = 150_000
+
+        private val APP_FOLDERS = listOf(
+            "Android/media/com.whatsapp",
+            "Android/media/com.whatsapp.w4b",
+            "WhatsApp",
+            "WhatsApp Business",
+            "Android/media/org.telegram.messenger",
+            "Telegram",
+        )
 
         private const val COL_CONTACT_ID = "contact_id"
         private const val COL_DISPLAY_NAME = "display_name"

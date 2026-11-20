@@ -7,6 +7,7 @@
 - 🖼️ **Photos (JPG, PNG…)**, 🎬 **Videos**, 🎵 **Audio**
 - 📄 **Documents**: PDF, Word, Excel, TXT…
 - 📦 **APK** files, 📁 **అన్ని ఇతర files**
+- 🟢 **WhatsApp / WhatsApp Business / Telegram folders**: Gallery లో కనబడని Sent files, Voice notes, Statuses కూడా (All files access ఆన్ చేసి ఉంటే)
 
 ## ఎలా వెతకవచ్చు
 

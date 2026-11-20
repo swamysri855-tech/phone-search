@@ -119,8 +119,11 @@ class ResultAdapter(
             h.itemView.background = h.defaultBackground
         }
         val uri = r.uri
-        if (!isSelected && (r.kind == Kind.IMAGE || r.kind == Kind.VIDEO) && uri != null && Build.VERSION.SDK_INT >= 29) {
-            val key = uri.toString()
+        val path = r.path
+        if (!isSelected && (r.kind == Kind.IMAGE || r.kind == Kind.VIDEO) && (uri != null || path != null) &&
+            Build.VERSION.SDK_INT >= 29
+        ) {
+            val key = uri?.toString() ?: path.orEmpty()
             val cached = thumbs.get(key)
             if (cached != null) {
                 h.thumb.setImageBitmap(cached)
@@ -129,7 +132,14 @@ class ResultAdapter(
                 h.job = scope.launch {
                     val bmp = withContext(Dispatchers.IO) {
                         try {
-                            resolver.loadThumbnail(uri, Size(160, 160), null)
+                            val size = Size(160, 160)
+                            when {
+                                uri != null -> resolver.loadThumbnail(uri, size, null)
+                                r.kind == Kind.VIDEO ->
+                                    android.media.ThumbnailUtils.createVideoThumbnail(java.io.File(path!!), size, null)
+                                else ->
+                                    android.media.ThumbnailUtils.createImageThumbnail(java.io.File(path!!), size, null)
+                            }
                         } catch (e: Exception) {
                             null
                         }
