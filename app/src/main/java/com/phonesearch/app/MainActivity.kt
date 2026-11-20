@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         }
         dateButton.setOnClickListener { showDateDialog() }
         sortButton.setOnClickListener { showSortDialog() }
+        findViewById<View>(R.id.aiButton).setOnClickListener { aiButtonClicked() }
         permButton.setOnClickListener { requestMissingAccess() }
 
         if (missingRuntimePermissions().isNotEmpty()) {
@@ -216,8 +217,31 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- AI photo sorting
 
-    private fun startAiOrganize() {
-        val photos = adapter.selectedItems().filter { it.kind == Kind.IMAGE && it.path != null }
+    /** Big top button: sort the selected photos, or every photo currently shown. */
+    private fun aiButtonClicked() {
+        if (adapter.inSelectionMode) {
+            startAiOrganize()
+            return
+        }
+        val photos = adapter.currentItems().filter { it.kind == Kind.IMAGE && it.path != null }
+        if (photos.isEmpty()) {
+            toast("ఇక్కడ ఫోటోలు లేవు. 🖼️ Photos chip నొక్కి మళ్ళీ ప్రయత్నించండి.")
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("🤖 AI తో ఫోటోలు వేరు చేయాలా?")
+            .setMessage(
+                "ఇప్పుడు కనిపిస్తున్న ${photos.size} ఫోటోలను AI చూసి, రకం ప్రకారం (మొక్కలు, ఆహారం, మనుషులు…) " +
+                    "folders లోకి వేరు చేస్తుంది.\n\n" +
+                    "కొన్ని ఫోటోలే కావాలంటే: పైన వెతికి / 📅 తేదీ ఎంచుకుని తగ్గించండి, లేదా ఫోటోపై long-press చేసి ఎంచుకుని మళ్ళీ ఈ బటన్ నొక్కండి."
+            )
+            .setPositiveButton("మొదలుపెట్టు ▶") { _, _ -> startAiOrganize(photos) }
+            .setNegativeButton("వద్దు", null)
+            .show()
+    }
+
+    private fun startAiOrganize(given: List<SearchResult>? = null) {
+        val photos = given ?: adapter.selectedItems().filter { it.kind == Kind.IMAGE && it.path != null }
         if (photos.isEmpty()) {
             toast("ఫోటోలు ఎంచుకోండి. (🖼️ Photos chip నొక్కి, ☑ అన్నీ ఎంచుకో చేయవచ్చు)")
             return

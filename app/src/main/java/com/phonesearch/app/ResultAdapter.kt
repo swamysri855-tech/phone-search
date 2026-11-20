@@ -39,6 +39,8 @@ class ResultAdapter(
 
     fun selectedItems(): List<SearchResult> = items.filter { it.key in selected }
 
+    fun currentItems(): List<SearchResult> = items
+
     @android.annotation.SuppressLint("NotifyDataSetChanged")
     fun selectAll() {
         items.forEach { selected += it.key }

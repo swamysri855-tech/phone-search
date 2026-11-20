@@ -213,8 +213,8 @@ class SearchRepository(private val context: Context) {
         val rootPath = root.absolutePath
         val out = ArrayList<DiskFile>()
         APP_FOLDERS.map { File(root, it) }.filter { it.isDirectory }.forEach { dir ->
-            dir.walkTopDown().forEach { file ->
-                if (out.size < MAX_DISK_FILES && file.isFile && file.name != ".nomedia") {
+            dir.walkTopDown().onEnter { d -> d == dir || isUsefulFolder(d.name) }.forEach { file ->
+                if (out.size < MAX_DISK_FILES && file.isFile && isUsefulFile(file.name)) {
                     val size = file.length()
                     if (size > 0) {
                         val rel = file.parent.orEmpty().removePrefix(rootPath)
@@ -225,6 +225,17 @@ class SearchRepository(private val context: Context) {
         }
         diskIndex = out
         return out
+    }
+
+    /** Skip the apps' internal folders (temp, encrypted, databases, backups); keep viewed Statuses. */
+    private fun isUsefulFolder(name: String) =
+        (!name.startsWith(".") || name.equals(".Statuses", true)) &&
+            name !in setOf("Databases", "Backups", "cache", "temp", "tmp")
+
+    private fun isUsefulFile(name: String): Boolean {
+        if (name.startsWith(".")) return false
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return ext !in JUNK_EXTENSIONS && !ext.startsWith("crypt")
     }
 
     private fun searchHiddenAppFolders(f: SearchFilters, alreadyFound: Set<String>): List<SearchResult> {
@@ -353,6 +364,8 @@ class SearchRepository(private val context: Context) {
         const val LIMIT_MESSAGES = 400
         const val LIMIT_FILES = 1500
         private const val MAX_DISK_FILES = 150_000
+
+        private val JUNK_EXTENSIONS = setOf("tmp", "chk", "enc", "db", "db-wal", "db-shm", "nomedia", "log", "lock")
 
         private val APP_FOLDERS = listOf(
             "Android/media/com.whatsapp",
