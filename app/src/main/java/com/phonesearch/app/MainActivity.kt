@@ -35,6 +35,7 @@ import com.google.android.material.chip.ChipGroup
 import com.google.android.material.datepicker.MaterialDatePicker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -148,6 +149,7 @@ class MainActivity : AppCompatActivity() {
         selCount = findViewById(R.id.selCount)
         findViewById<View>(R.id.selClose).setOnClickListener { adapter.clearSelection() }
         findViewById<View>(R.id.selAll).setOnClickListener { adapter.selectAll() }
+        findViewById<View>(R.id.selAi).setOnClickListener { startAiOrganize() }
         findViewById<View>(R.id.selMove).setOnClickListener { startTransfer(move = true) }
         findViewById<View>(R.id.selCopyTo).setOnClickListener { startTransfer(move = false) }
         findViewById<View>(R.id.selShare).setOnClickListener { shareSelected() }
@@ -210,6 +212,98 @@ class MainActivity : AppCompatActivity() {
             adapter.clearSelection()
             runSearch(0)
         }
+    }
+
+    // ---------------------------------------------------------------- AI photo sorting
+
+    private fun startAiOrganize() {
+        val photos = adapter.selectedItems().filter { it.kind == Kind.IMAGE && it.path != null }
+        if (photos.isEmpty()) {
+            toast("ఫోటోలు ఎంచుకోండి. (🖼️ Photos chip నొక్కి, ☑ అన్నీ ఎంచుకో చేయవచ్చు)")
+            return
+        }
+        if (!canWriteFiles()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("అనుమతి కావాలి")
+                .setMessage("ఫోటోలను చదివి folders లో పెట్టడానికి \"All files access\" ఆన్ చేయాలి.")
+                .setPositiveButton("ఆన్ చేయి") { _, _ -> requestMissingAccess() }
+                .setNegativeButton("రద్దు", null)
+                .show()
+            return
+        }
+
+        val organizer = PhotoOrganizer()
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val label = TextView(this).apply {
+            text = "AI ఫోటోలను చూస్తోంది… 0 / ${photos.size}"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text))
+        }
+        val bar = com.google.android.material.progressindicator.LinearProgressIndicator(this).apply {
+            max = photos.size
+            setPadding(0, pad / 2, 0, 0)
+        }
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(label)
+            addView(bar)
+        }
+        var job: Job? = null
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("🤖 ఫోటోలను గుర్తుపడుతోంది")
+            .setView(box)
+            .setCancelable(false)
+            .setNegativeButton("ఆపు") { _, _ -> job?.cancel() }
+            .show()
+
+        job = lifecycleScope.launch {
+            try {
+                val plans = organizer.analyze(photos) { done, total ->
+                    label.text = "AI ఫోటోలను చూస్తోంది… $done / $total"
+                    bar.setProgressCompat(done, true)
+                }
+                dialog.dismiss()
+                confirmAiPlans(plans, organizer)
+            } finally {
+                if (dialog.isShowing) dialog.dismiss()
+                if (!isActive) organizer.close()
+            }
+        }
+    }
+
+    private fun confirmAiPlans(plans: List<PhotoPlan>, organizer: PhotoOrganizer) {
+        if (plans.isEmpty()) {
+            toast("ఏ ఫోటోనూ చదవలేకపోయాను")
+            organizer.close()
+            return
+        }
+        val summary = plans.groupBy { it.group }.entries
+            .sortedByDescending { it.value.size }
+            .joinToString("\n") { (g, list) -> "${g.telugu}: ${list.size}" }
+        val example = plans.first()
+        val where = organizer.outputRoot.absolutePath.removePrefix(Environment.getExternalStorageDirectory().absolutePath)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("${plans.size} ఫోటోలు గుర్తించాను")
+            .setMessage(
+                "$summary\n\n" +
+                    "ఉదాహరణ: ${example.source.name}\n→ ${example.group.folder}/${example.newName}\n\n" +
+                    "కొత్త పేర్లతో కాపీలు \"$where\" లోని folders లో పెడతాను. అసలు ఫోటోలు అలాగే ఉంటాయి."
+            )
+            .setPositiveButton("కాపీ చేయి ✅") { _, _ ->
+                lifecycleScope.launch {
+                    progress.visibility = View.VISIBLE
+                    val res = FileOps.copyPlans(applicationContext, plans, organizer.outputRoot)
+                    organizer.close()
+                    progress.visibility = View.GONE
+                    toast("✅ ${res.done} ఫోటోలు $where లో సేవ్ అయ్యాయి" + if (res.failed > 0) " • ❌ ${res.failed} కాలేదు" else "")
+                    repo.refreshFolderIndex()
+                    adapter.clearSelection()
+                    searchInput.setText("AI_Sorted")
+                }
+            }
+            .setNegativeButton("వద్దు") { _, _ -> organizer.close() }
+            .setCancelable(false)
+            .show()
     }
 
     private fun canWriteFiles(): Boolean =

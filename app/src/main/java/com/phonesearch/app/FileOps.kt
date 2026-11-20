@@ -52,6 +52,32 @@ object FileOps {
             TransferResult(done, failed, skipped)
         }
 
+    /** Copy each plan's photo into outputRoot/<group>/<newName>, keeping the original untouched. */
+    suspend fun copyPlans(context: Context, plans: List<PhotoPlan>, outputRoot: File): TransferResult =
+        withContext(Dispatchers.IO) {
+            var done = 0
+            var failed = 0
+            val created = ArrayList<String>()
+            for (p in plans) {
+                val dir = File(outputRoot, p.group.folder)
+                val target = if (dir.isDirectory || dir.mkdirs()) uniqueTarget(dir, p.newName) else null
+                val ok = target != null && try {
+                    copy(p.source, target)
+                } catch (e: Exception) {
+                    target.delete()
+                    false
+                }
+                if (ok) {
+                    done++
+                    created += target!!.absolutePath
+                } else {
+                    failed++
+                }
+            }
+            scan(context, created)
+            TransferResult(done, failed, 0)
+        }
+
     private fun copy(src: File, target: File): Boolean {
         src.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
         target.setLastModified(src.lastModified()) // keep the original date for date-wise search
